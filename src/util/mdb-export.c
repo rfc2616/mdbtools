@@ -26,34 +26,47 @@
 #undef MDB_BIND_SIZE
 #define MDB_BIND_SIZE 200000
 
-#define is_text_type(x) (x==MDB_TEXT || x==MDB_MEMO || x==MDB_SDATETIME || x==MDB_BINARY)
+#define is_quote_type(x) (x==MDB_TEXT || x==MDB_OLE || x==MDB_MEMO || x==MDB_DATETIME || x==MDB_BINARY)
+#define is_binary_type(x) (x==MDB_OLE || x==MDB_BINARY)
 
 static char *escapes(char *s);
 
-void
-print_col(gchar *col_val, int quote_text, int col_type, char *quote_char, char *escape_char)
+//#define DONT_ESCAPE_ESCAPE
+static void
+print_col(gchar *col_val, int quote_text, int col_type, int bin_len, char *quote_char, char *escape_char)
 {
-	gchar *s;
+	size_t quote_len = strlen(quote_char); /* multibyte */
 
-	if (quote_text && is_text_type(col_type)) {
-		fprintf(stdout,quote_char);
-		for (s=col_val;*s;s++) {
-			if (col_type == MDB_BINARY)
-				fprintf(stdout, "\\%03o", (unsigned char)*s);
-			else if (strlen(quote_char)==1 && *s==quote_char[0]) {
-				/* double the char if no escape char passed */
-				if (!escape_char) {
-					fprintf(stdout,"%s%s",quote_char,quote_char);
-				} else {
-					fprintf(stdout,"%s%s",escape_char,quote_char);
-				}
-			}
-			else fprintf(stdout,"%c",*s);
+	size_t orig_escape_len = escape_char ? strlen(escape_char) : 0;
+
+	/* double the quote char if no escape char passed */
+	if (!escape_char)
+		escape_char = quote_char;
+
+	if (quote_text && is_quote_type(col_type)) {
+		fputs(quote_char,stdout);
+		while (1) {
+			if (is_binary_type(col_type)) {
+				if (!bin_len--)
+					break;
+			} else /* use \0 sentry */
+				if (!*col_val)
+					break;
+
+			if (quote_len && !strncmp(col_val, quote_char, quote_len)) {
+				fprintf(stdout, "%s%s", escape_char, quote_char);
+				col_val += quote_len;
+#ifndef DONT_ESCAPE_ESCAPE
+			} else if (orig_escape_len && !strncmp(col_val, escape_char, orig_escape_len)) {
+				fprintf(stdout, "%s%s", escape_char, escape_char);
+				col_val += orig_escape_len;
+#endif
+			} else
+				putc(*col_val++, stdout);
 		}
-		fprintf(stdout,quote_char);
-	} else {
-		fprintf(stdout,"%s",col_val);
-	}
+		fputs(quote_char,stdout);
+	} else
+		fputs(col_val,stdout);
 }
 int
 main(int argc, char **argv)
@@ -74,6 +87,8 @@ main(int argc, char **argv)
 	char sanitize = 0;
 	char *namespace = "";
 	int  opt;
+	char *value;
+	size_t length;
 
 	while ((opt=getopt(argc, argv, "HQq:X:d:D:R:I:N:S"))!=-1) {
 		switch (opt) {
@@ -160,6 +175,7 @@ main(int argc, char **argv)
 	if (insert_dialect)
 		if (!mdb_set_default_backend(mdb, insert_dialect)) {
 			fprintf(stderr, "Invalid backend type\n");
+			if (escape_char) g_free (escape_char);
 			mdb_exit();
 			exit(1);
 		}
@@ -189,10 +205,10 @@ main(int argc, char **argv)
 		for (j=0; j<table->num_cols; j++) {
 			col=g_ptr_array_index(table->columns,j);
 			if (j)
-				fprintf(stdout,delimiter);
-			fprintf(stdout,"%s", sanitize ? sanitize_name(col->name) : col->name);
+				fputs(delimiter, stdout);
+			fputs(sanitize ? sanitize_name(col->name) : col->name, stdout);
 		}
-		fprintf(stdout,"\n");
+		fputs("\n", stdout);
 	}
 
 	while(mdb_fetch_row(table)) {
@@ -202,39 +218,43 @@ main(int argc, char **argv)
 			if (sanitize)
 				quoted_name = sanitize_name(argv[optind + 1]);
 			else
-				quoted_name = mdb->default_backend->quote_name(argv[optind + 1]);
+				quoted_name = mdb->default_backend->quote_schema_name(NULL, argv[optind + 1]);
 			fprintf(stdout, "INSERT INTO %s%s (", namespace, quoted_name);
 			free(quoted_name);
 			for (j=0;j<table->num_cols;j++) {
-				if (j>0) fprintf(stdout, ", ");
+				if (j>0) fputs(", ", stdout);
 				col=g_ptr_array_index(table->columns,j);
 				if (sanitize)
 					quoted_name = sanitize_name(col->name);
 				else
-					quoted_name = mdb->default_backend->quote_name(col->name);
-				fprintf(stdout,"%s", quoted_name);
+					quoted_name = mdb->default_backend->quote_schema_name(NULL, col->name);
+				fputs(quoted_name, stdout);
 				free(quoted_name);
 			} 
-			fprintf(stdout, ") VALUES (");
+			fputs(") VALUES (", stdout);
 		}
 
 		for (j=0;j<table->num_cols;j++) {
+			if (j>0)
+				fputs(delimiter, stdout);
 			col=g_ptr_array_index(table->columns,j);
-			if ((col->col_type == MDB_OLE)
-			 && ((j==0) || (col->cur_value_len))) {
-				mdb_ole_read(mdb, col, bound_values[j], MDB_BIND_SIZE);
-			}
-			if (j>0) {
-				fprintf(stdout,delimiter);
-			}
 			if (!bound_lens[j]) {
-				print_col(insert_dialect?"NULL":"",0,col->col_type, quote_char, escape_char);
+				if (insert_dialect)
+					fputs("NULL", stdout);
 			} else {
-				print_col(bound_values[j], quote_text, col->col_type, quote_char, escape_char);
+				if (col->col_type == MDB_OLE) {
+					value = mdb_ole_read_full(mdb, col, &length);
+				} else {
+					value = bound_values[j];
+					length = bound_lens[j];
+				}
+				print_col(value, quote_text, col->col_type, length, quote_char, escape_char);
+				if (col->col_type == MDB_OLE)
+					free(value);
 			}
 		}
-		if (insert_dialect) fprintf(stdout,");");
-		fprintf(stdout, row_delimiter);
+		if (insert_dialect) fputs(");", stdout);
+		fputs(row_delimiter, stdout);
 	}
 	for (j=0;j<table->num_cols;j++) {
 		g_free(bound_values[j]);
@@ -250,7 +270,7 @@ main(int argc, char **argv)
 	mdb_close(mdb);
 	mdb_exit();
 
-	exit(0);
+	return 0;
 }
 
 static char *escapes(char *s)

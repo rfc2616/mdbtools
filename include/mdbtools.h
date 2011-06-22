@@ -40,6 +40,7 @@
 #define MDB_DEBUG 0
 
 #define MDB_PGSIZE 4096
+//#define MDB_MAX_OBJ_NAME (256*3) /* unicode 16 -> utf-8 worst case */
 #define MDB_MAX_OBJ_NAME 256
 #define MDB_MAX_COLS 256
 #define MDB_MAX_IDX_COLS 10
@@ -82,7 +83,7 @@ enum {
 	MDB_MONEY = 0x05,
 	MDB_FLOAT = 0x06,
 	MDB_DOUBLE = 0x07,
-	MDB_SDATETIME = 0x08,
+	MDB_DATETIME = 0x08,
 	MDB_BINARY = 0x09,
 	MDB_TEXT = 0x0a,
 	MDB_OLE = 0x0b,
@@ -123,8 +124,9 @@ enum {
 	MDB_DEBUG_USAGE = 0x0004,
 	MDB_DEBUG_OLE = 0x0008,
 	MDB_DEBUG_ROW = 0x0010,
-	MDB_USE_INDEX = 0x0020,
-	MDB_NO_MEMO = 0x0040 /* don't follow memo fields */
+	MDB_DEBUG_PROPS = 0x0020,
+	MDB_USE_INDEX = 0x0040,
+	MDB_NO_MEMO = 0x0080, /* don't follow memo fields */
 };
 
 #define mdb_is_logical_op(x) (x == MDB_OR || \
@@ -151,6 +153,19 @@ enum {
 	MDB_IDX_REQUIRED = 0x08 
 };
 
+/* export schema options */
+enum {
+	MDB_SHEXP_DROPTABLE = 1<<0, /* issue drop table during export */
+	MDB_SHEXP_CST_NOTNULL = 1<<1, /* generate NOT NULL constraints */
+	MDB_SHEXP_CST_NOTEMPTY = 1<<2, /* <>'' constraints */
+	MDB_SHEXP_COMMENTS = 1<<3, /* export comments on columns & tables */
+	MDB_SHEXP_DEFVALUES = 1<<4, /* export default values */
+	MDB_SHEXP_INDEXES = 1<<5, /* export indices */
+	MDB_SHEXP_RELATIONS = 1<<6, /* export relation (foreign keys) */
+	MDB_SHEXP_SANITIZE = 1<<7 /* clean up names */
+};
+#define MDB_SHEXP_DEFAULT (MDB_SHEXP_CST_NOTNULL | MDB_SHEXP_COMMENTS | MDB_SHEXP_INDEXES | MDB_SHEXP_RELATIONS)
+
 #define IS_JET4(mdb) (mdb->f->jet_version==MDB_VER_JET4)
 #define IS_JET3(mdb) (mdb->f->jet_version==MDB_VER_JET3)
 
@@ -166,8 +181,18 @@ typedef struct {
 } MdbBackendType;
 		
 typedef struct {
-	 MdbBackendType *types_table;
-	 char* (*quote_name)(const char*);
+	guint32 capabilities; /* see MDB_SHEXP_* */
+	MdbBackendType *types_table;
+	MdbBackendType *type_shortdate;
+	MdbBackendType *type_autonum;
+	const char *short_now;
+	const char *long_now;
+	const char *charset_statement;
+	const char *drop_statement;
+	const char *constaint_not_empty_statement;
+	const char *column_comment_statement;
+	const char *table_comment_statement;
+	gchar* (*quote_schema_name)(const gchar*, const gchar*);
 } MdbBackend;
 
 typedef struct {
@@ -238,10 +263,8 @@ typedef struct {
 	char           object_name[MDB_MAX_OBJ_NAME+1];
 	int            object_type;
 	unsigned long  table_pg; /* misnomer since object may not be a table */
-	unsigned long  kkd_pg;
-	unsigned int   kkd_rowid;
-	int			num_props;
-	GArray		*props;
+	//int			num_props; please use props->len
+	GArray		*props; /* GArray of MdbProperties */
 	GArray		*columns;
 	int		flags;
 } MdbCatalogEntry;
@@ -257,7 +280,9 @@ typedef union {
 	char	s[256];
 } MdbAny;
 
+struct S_MdbTableDef; /* forward definition */
 typedef struct {
+	struct S_MdbTableDef *table;
 	char		name[MDB_MAX_OBJ_NAME+1];
 	int		col_type;
 	int		col_size;
@@ -320,7 +345,7 @@ typedef struct {
 	MdbIndexPage pages[MDB_MAX_INDEX_DEPTH];
 } MdbIndexChain;
 
-typedef struct {
+typedef struct S_MdbTableDef {
 	MdbCatalogEntry *entry;
 	char	name[MDB_MAX_OBJ_NAME+1];
 	unsigned int    num_cols;
@@ -432,6 +457,8 @@ extern guint32 read_pg_if_32(MdbHandle *mdb, int *cur_pos);
 extern void *read_pg_if_n(MdbHandle *mdb, void *buf, int *cur_pos, size_t len);
 extern int mdb_is_user_table(MdbCatalogEntry *entry);
 extern int mdb_is_system_table(MdbCatalogEntry *entry);
+extern const char *mdb_table_get_prop(const MdbTableDef *table, const gchar *key);
+extern const char *mdb_col_get_prop(const MdbColumn *col, const gchar *key);
 
 /* data.c */
 extern int mdb_bind_column_by_name(MdbTableDef *table, gchar *col_name, void *bind_ptr, int *len_ptr);
@@ -448,6 +475,7 @@ extern int mdb_col_fixed_size(MdbColumn *col);
 extern int mdb_col_disp_size(MdbColumn *col);
 extern size_t mdb_ole_read_next(MdbHandle *mdb, MdbColumn *col, void *ole_ptr);
 extern size_t mdb_ole_read(MdbHandle *mdb, MdbColumn *col, void *ole_ptr, int chunk_size);
+extern void* mdb_ole_read_full(MdbHandle *mdb, MdbColumn *col, size_t *size);
 extern void mdb_set_date_fmt(const char *);
 extern int mdb_read_row(MdbTableDef *table, unsigned int row);
 
@@ -456,14 +484,16 @@ extern void buffer_dump(const void *buf, int start, size_t len);
 
 /* backend.c */
 extern char* sanitize_name(const char* name);
-extern char *mdb_get_coltype_string(MdbBackend *backend, int col_type);
-extern int  mdb_coltype_takes_length(MdbBackend *backend, int col_type);
+extern char* mdb_get_coltype_string(MdbBackend *backend, int col_type); /* obsolete */
+extern int mdb_coltype_takes_length(MdbBackend *backend, int col_type); /* obsolete */
+extern const MdbBackendType* mdb_get_colbacktype(const MdbColumn *col);
+extern const char* mdb_get_colbacktype_string(const MdbColumn *col);
+extern int mdb_colbacktype_takes_length(const MdbColumn *col);
 extern void mdb_init_backends();
-extern void mdb_register_backend(MdbBackendType *backend, char* (*quote_name)(const char*), char *backend_name);
+extern void mdb_register_backend(char *backend_name, guint32 capabilities, MdbBackendType *backend_type, MdbBackendType *type_shortdate, MdbBackendType *type_autonum, const char *short_now, const char *long_now, const char *charset_statement, const char *drop_statement, const char *constaint_not_empty_statement, const char *column_comment_statement, const char *table_comment_statement, gchar* (*quote_schema_name)(const gchar*, const gchar*));
 extern void mdb_remove_backends();
 extern int  mdb_set_default_backend(MdbHandle *mdb, const char *backend_name);
-extern char *mdb_get_sequences(MdbCatalogEntry *entry, char *namespace, int sanitize);
-extern char *mdb_get_relationships(MdbHandle *mdb);
+extern void mdb_print_schema(MdbHandle *mdb, FILE *outfile, char *tabname, char *namespace, guint32 export_options);
 
 /* sargs.c */
 extern int mdb_test_sargs(MdbTableDef *table, MdbField *fields, int num_fields);
@@ -514,9 +544,10 @@ extern guint32 mdb_map_find_next_freepage(MdbTableDef *table, int row_size);
 extern gint32 mdb_map_find_next(MdbHandle *mdb, unsigned char *map, unsigned int map_sz, guint32 start_pg);
 
 /* props.c */
-extern GPtrArray *mdb_read_props_list(gchar *kkd, int len);
 extern void mdb_free_props(MdbProperties *props);
-extern MdbProperties *mdb_read_props(MdbHandle *mdb, GPtrArray *names, gchar *kkd, int len);
+extern void mdb_dump_props(MdbProperties *props, FILE *outfile, int show_name);
+extern GArray* kkd_to_props(MdbHandle *mdb, void *kkd, size_t len);
+
 
 /* worktable.c */
 extern MdbTableDef *mdb_create_temp_table(MdbHandle *mdb, char *name);
@@ -534,6 +565,7 @@ extern int mdb_unicode2ascii(MdbHandle *mdb, char *src, size_t slen, char *dest,
 extern int mdb_ascii2unicode(MdbHandle *mdb, char *src, size_t slen, char *dest, size_t dlen);
 extern void mdb_iconv_init(MdbHandle *mdb);
 extern void mdb_iconv_close(MdbHandle *mdb);
+extern const char* mdb_target_charset(MdbHandle *mdb);
 
 #ifdef __cplusplus
   }

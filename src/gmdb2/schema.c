@@ -26,29 +26,30 @@ extern MdbHandle *mdb;
 
 GladeXML *schemawin_xml;
 static gchar backend[100];
-static gchar tabname[100];
-static gchar file_path[256];
-static gchar relation;
-static gchar drops;
+static gchar tabname[MDB_MAX_OBJ_NAME+1];
+static gchar file_path[PATH_MAX+1];
+static guint32 export_options;
 
 #define ALL_TABLES   "(All Tables)"
+
+static struct {
+	const char *option_name;
+	guint32     option_value;
+} capabilities_xlt[] = {
+	{ "drop_checkbox", MDB_SHEXP_DROPTABLE },
+	{ "cstnotnull_checkbox", MDB_SHEXP_CST_NOTNULL },
+	{ "cstnotempty_checkbox", MDB_SHEXP_CST_NOTEMPTY},
+	{ "comments_checkbox", MDB_SHEXP_COMMENTS},
+	{ "defaults_checkbox", MDB_SHEXP_DEFVALUES },
+	{ "index_checkbox", MDB_SHEXP_INDEXES},
+	{ "rel_checkbox", MDB_SHEXP_RELATIONS}
+};
+#define n_capabilities (sizeof(capabilities_xlt)/sizeof(capabilities_xlt[0]))
 
 static void
 gmdb_schema_export()
 {
 FILE *outfile;
-MdbTableDef *table;
-MdbCatalogEntry *entry;
-MdbColumn *col;
-int i,k;
-int need_headers = 0;
-int need_quote = 0;
-gchar delimiter[11];
-gchar quotechar;
-gchar lineterm[5];
-gchar *str;
-int rows=0;
-char            *the_relation;
 
 	GtkWidget *dlg;
 
@@ -63,62 +64,7 @@ char            *the_relation;
 	}
 	mdb_set_default_backend(mdb,backend);
 
-	for (i=0; i < mdb->num_catalog; i++) {
-		entry = g_ptr_array_index (mdb->catalog, i);
-
-		if (entry->object_type != MDB_TABLE)
-			continue;
-		/* Do not show system tables if table name is not specified */
-		if (mdb_is_system_table(entry) && !strlen(tabname))
-			continue;
-		/* If object name does not match the table specified */
-		if (strlen(tabname) && strcmp(entry->object_name, tabname))
-			continue;
-
-	       /* drop the table if it exists */
-	       if (drops=='Y') 
-		       fprintf(outfile, "DROP TABLE %s;\n", entry->object_name);
-
-	       /* create the table */
-	       fprintf (outfile, "CREATE TABLE %s\n", entry->object_name);
-	       fprintf (outfile, " (\n");
-	       	       
-	       table = mdb_read_table (entry);
-
-	       /* get the columns */
-	       mdb_read_columns (table);
-
-	       /* loop over the columns, dumping the names and types */
-
-	       for (k = 0; k < table->num_cols; k++) {
-		   col = g_ptr_array_index (table->columns, k);
-		   
-		   fprintf (outfile, "\t%s\t\t\t%s", col->name, 
-			    mdb_get_coltype_string (mdb->default_backend, col->col_type));
-		   
-		   if (col->col_size != 0)
-		     fprintf (outfile, " (%d)", col->col_size);
-		   
-		   if (k < table->num_cols - 1)
-		     fprintf (outfile, ", \n");
-		   else
-		     fprintf (outfile, "\n");
-		 }
-
-	       fprintf (outfile, "\n);\n");
-	       fprintf (outfile, "-- CREATE ANY INDEXES ...\n");
-	       fprintf (outfile, "\n");
-	}
-	fprintf (outfile, "\n\n");
-
-	if (relation=='Y') {
-		fprintf (outfile, "-- CREATE ANY Relationships ...\n");
-		fprintf (outfile, "\n");
-		while ((the_relation=mdb_get_relationships(mdb)) != NULL) {
-			fprintf(outfile,"%s\n",the_relation);
-			g_free(the_relation);
-		}            
- 	}
+	mdb_print_schema(mdb, outfile, *tabname?tabname:NULL, NULL, export_options);
 
 	fclose(outfile);
 	dlg = gtk_message_dialog_new (NULL,
@@ -130,15 +76,20 @@ char            *the_relation;
 void
 gmdb_schema_export_cb(GtkWidget *w, gpointer data)
 {
-GtkWidget *schemawin, *combo, *checkbox, *chooser;
+GtkWidget *schemawin, *combo, *checkbox, *entry;
+int i;
 
 	schemawin = glade_xml_get_widget (schemawin_xml, "schema_dialog");
 
-	chooser = glade_xml_get_widget (schemawin_xml, "filechooserbutton1");
-	strncpy(file_path,gtk_file_chooser_get_filename (GTK_FILE_CHOOSER (chooser)),255);
+	entry = glade_xml_get_widget (schemawin_xml, "filename_entry");
+	strncpy(file_path,gtk_entry_get_text(GTK_ENTRY(entry)),PATH_MAX);
+	file_path[PATH_MAX]=0;
+
 	combo = glade_xml_get_widget (schemawin_xml, "table_combo");
-	strncpy(tabname,gtk_entry_get_text(GTK_ENTRY(GTK_COMBO(combo)->entry)),99);
+	strncpy(tabname,gtk_entry_get_text(GTK_ENTRY(GTK_COMBO(combo)->entry)),MDB_MAX_OBJ_NAME);
+	tabname[MDB_MAX_OBJ_NAME]=0;
 	if (!strcmp(tabname,ALL_TABLES)) tabname[0]='\0';
+
 	combo = glade_xml_get_widget (schemawin_xml, "backend_combo");
 	if (!strcmp(gtk_entry_get_text(GTK_ENTRY(GTK_COMBO(combo)->entry)),"Oracle")) strcpy(backend,"oracle");
 	else if (!strcmp(gtk_entry_get_text(GTK_ENTRY(GTK_COMBO(combo)->entry)),"Sybase")) strcpy(backend,"sybase");
@@ -146,21 +97,67 @@ GtkWidget *schemawin, *combo, *checkbox, *chooser;
 	else if (!strcmp(gtk_entry_get_text(GTK_ENTRY(GTK_COMBO(combo)->entry)),"PostgreSQL")) strcpy(backend,"postgres");
 	else if (!strcmp(gtk_entry_get_text(GTK_ENTRY(GTK_COMBO(combo)->entry)),"MySQL")) strcpy(backend,"mysql");
 	else strcpy(backend,"access");
-	checkbox = glade_xml_get_widget (schemawin_xml, "rel_checkbox");
-	if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(checkbox)))
-		relation = 'Y';
-	else
-		relation = 'N';
-	checkbox = glade_xml_get_widget (schemawin_xml, "drop_checkbox");
-	if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(checkbox)))
-		drops = 'Y';
-	else
-		drops = 'N';
-	//printf("%s %s %c\n",tabname,backend,relation);
+
+	/* make sure unknown default options are enabled */
+	export_options = MDB_SHEXP_DEFAULT;
+	for (i=0; i<n_capabilities; ++i)
+		export_options &= ~capabilities_xlt[i].option_value;
+
+	/* fill the bit field from the checkboxes */
+	for (i=0; i<n_capabilities; ++i) {
+		checkbox = glade_xml_get_widget (schemawin_xml, capabilities_xlt[i].option_name);
+		if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(checkbox)))
+			export_options |= capabilities_xlt[i].option_value;
+	}
+	//printf("%s %s %02X\n",tabname,backend,export_options);
 
 	gtk_widget_destroy(schemawin);
 	gmdb_schema_export();
 }
+static void
+check_default_options() {
+	int i;
+	GtkToggleButton *checkbox;
+	for (i=0; i<n_capabilities; ++i) {
+		checkbox = GTK_TOGGLE_BUTTON(glade_xml_get_widget (schemawin_xml, capabilities_xlt[i].option_name));
+		gtk_toggle_button_set_active(checkbox, (MDB_SHEXP_DEFAULT & capabilities_xlt[i].option_value) != 0);
+	}
+}
+static void
+refresh_available_options() {
+	GtkWidget *combo, *checkbox;
+	guint32 capabilities;
+	extern GHashTable *mdb_backends; /* FIXME */
+	MdbBackend *backend_obj;
+	int i;
+
+	combo = glade_xml_get_widget (schemawin_xml, "backend_combo");
+	if (!combo) return; /* window is beeing destroyed */
+
+	const gchar *backend_name = gtk_entry_get_text(GTK_ENTRY(GTK_COMBO(combo)->entry));
+	if      (!strcmp(backend_name,"Oracle")) strcpy(backend,"oracle");
+	else if (!strcmp(backend_name,"Sybase")) strcpy(backend,"sybase");
+	else if (!strcmp(backend_name,"MS SQL Server")) strcpy(backend,"sybase");
+	else if (!strcmp(backend_name,"PostgreSQL")) strcpy(backend,"postgres");
+	else if (!strcmp(backend_name,"MySQL")) strcpy(backend,"mysql");
+	else strcpy(backend,"access");
+
+	backend_obj = (MdbBackend *) g_hash_table_lookup(mdb_backends, backend);
+	//printf("backend_obj: %p\n", backend_obj);
+
+	capabilities = backend_obj->capabilities;
+	//printf("backend capabilities: 0x%04x\n", capabilities);
+	for (i=0; i<n_capabilities; ++i) {
+		checkbox = glade_xml_get_widget (schemawin_xml, capabilities_xlt[i].option_name);
+		gtk_widget_set_sensitive(checkbox, (capabilities & capabilities_xlt[i].option_value) != 0);
+	}
+}
+
+void
+gmdb_schema_capabilities_cb(GtkList *list) {
+	refresh_available_options();
+}
+
 void
 gmdb_schema_help_cb(GtkWidget *w, gpointer data) 
 {
@@ -168,7 +165,7 @@ gmdb_schema_help_cb(GtkWidget *w, gpointer data)
 
 	gnome_help_display("gmdb.xml", "gmdb-schema", &error);
 	if (error != NULL) {
-		g_warning (error->message);
+		g_warning ("%s", error->message);
 		g_error_free (error);
 	}
 }
@@ -185,6 +182,10 @@ gmdb_schema_new_cb(GtkWidget *w, gpointer data)
 	schemawin_xml = glade_xml_new(GMDB_GLADEDIR "gmdb-schema.glade", NULL, NULL);
 	/* connect the signals in the interface */
 	glade_xml_signal_autoconnect(schemawin_xml);
+	/* set up capabilities call back. TODO: autoconnect should do that */
+	combo = glade_xml_get_widget(schemawin_xml, "combo-list2");
+	g_signal_connect( G_OBJECT (combo), "selection_changed",
+		G_CALLBACK(gmdb_schema_capabilities_cb), schemawin_xml);
 	
 	/* set signals with user data, anyone know how to do this in glade? */
 	combo = glade_xml_get_widget (schemawin_xml, "table_combo");
@@ -199,4 +200,7 @@ gmdb_schema_new_cb(GtkWidget *w, gpointer data)
 	} /* for */
 	gtk_combo_set_popdown_strings(GTK_COMBO(combo), glist);
 	g_list_free(glist);
+
+	check_default_options();
+	refresh_available_options();
 }

@@ -78,9 +78,13 @@ Not a lot is known about this page, and it is one of the least documented page
 types.  However, it contains things like Jet version, encryption keys, and name
 of the creating program.
 
-Offset 0x14 contains the Jet version of this database: 0x00 for 3, 0x01 for 4.
+Offset 0x14 contains the Jet version of this database: 0x00 for 3, 0x01 for 4,
+0x02 for 5, 0x03 for Access 2010.
 This is used by the mdb-ver utility to determine the Jet version.
 
+The 14 bytes starting at 0x42 are the (encrypted) database password.
+
+The 4 bytes at 0x3e on the Database Definition Page are the database key.
 
 Data Pages
 ----------
@@ -220,6 +224,13 @@ else
 The length (partial if type 2) for the memo is:
 memo_page_len = offset_stop - offset_start
 
+Update: The bitmask can't be an entire byte long.
+OLE fields can hold up to 1gig. That requires at least 30 bits, leaving only 2
+bits for flags. Maybe sometimes 0xC0000000 is ignored?
+See http://office.microsoft.com/en-us/access-help/access-2007-specifications-HA010030739.aspx
+Number of characters in a Memo field: 65,535 when entering data through the
+user interface; 2 gigabytes of character storage when entering data
+programmatically. That would mean 31 bits for length.
 
 LVAL (Long Value) Pages
 -----------------------
@@ -286,7 +297,7 @@ next_pg field.
 | ???? | 2 bytes | num_var_cols| Number of variable columns in table      |
 | ???? | 2 bytes | num_cols    | Number of columns in table (repeat)      |
 | ???? | 4 bytes | num_idx     | Number of indexes in table               |
-| ???? | 4 bytes | num_real_idx| Number of indexes in table (repeat)      |
+| ???? | 4 bytes | num_real_idx| Number of index entries                  |
 | ???? | 4 bytes | used_pages  | Points to a record containing the        |
 |      |         |             | usage bitmask for this table.            |
 | ???? | 4 bytes | free_pages  | Points to a similar record as above,     |
@@ -307,7 +318,7 @@ next_pg field.
 | ???? | 1 byte  | precision   | precision if numeric column              |
 | ???? | 1 byte  | scale       | scale if numeric column                  |
 | ???? | 2 bytes | ???         |                                          |
-| ???? | 1 byte  | bitmask     | low order bit indicates variable columns |
+| ???? | 1 byte  | bitmask     | See Column flags bellow                  |
 | ???? | 2 bytes | offset_F    | Offset for fixed length columns          |
 | ???? | 2 bytes | col_len     | Length of the column (0 if memo)         |
 +-------------------------------------------------------------------------+
@@ -316,7 +327,7 @@ next_pg field.
 | ???? | 1 byte  | col_name_len| len of the name of the column            |
 | ???? | n bytes | col_name    | Name of the column                       |
 +-------------------------------------------------------------------------+
-| Iterate for the number of num_real_idx (30+9 = 39 bytes)                |
+| Iterate for indexes with index_type 0 or 1 (30+9 = 39 bytes)            |
 +-------------------------------------------------------------------------+
 |     Iterate 10 times for 10 possible columns (10*3 = 30 bytes)          |
 +-------------------------------------------------------------------------+
@@ -327,24 +338,27 @@ next_pg field.
 | ???? | 4 bytes | first_dp    | Data pointer of the index page           |
 | ???? | 1 byte  | flags       | See flags table for indexes              |
 +-------------------------------------------------------------------------+
-| Iterate for the number of num_real_idx (20 bytes)                       |
+| Iterate for the number of num_idx (20 bytes)                            |
 +-------------------------------------------------------------------------+
 | ???? | 4 bytes | index_num   | Number of the index                      |
 |      |         |             |(warn: not always in the sequential order)|
-| ???? | 4 bytes | index_num2  | Number of the index (repeat)             |
+| ???? | 4 bytes | index_num2  | Index into index cols list               |
 | 0x00 | 1 byte  | ???         |                                          |
 | 0xFF | 4 bytes | ???         |                                          |
 | 0x00 | 4 bytes | ???         |                                          |
 | 0x04 | 2 bytes | ???         |                                          |
 | ???? | 1 byte  | primary_key | 0x01 if this index is primary            |
 +-------------------------------------------------------------------------+
-| Iterate for the number of num_real_idx                                  |
+| Iterate for the number of num_idx                                       |
 +-------------------------------------------------------------------------+
 | ???? | 1 byte  | idx_name_len| len of the name of the index             |
 | ???? | n bytes | idx_name    | Name of the index                        |
 +-------------------------------------------------------------------------+
-| ???? | n bytes | ???         |                                          |
-| 0xFF | 2 bytes | ???         | End of the tableDef  ?                   |
+| Iterate while col_num != 0xffff                                         |
++-------------------------------------------------------------------------+
+| ???? | 2 bytes | col_num     | Column number with variable length       |
+| ???? | 4 bytes | arg1        |                                          |
+| ???? | 4 bytes | arg2        |                                          |
 +-------------------------------------------------------------------------+
 
 +-------------------------------------------------------------------------+
@@ -363,7 +377,7 @@ next_pg field.
 | ???? | 2 bytes | num_var_cols| Number of variable columns in table      |
 | ???? | 2 bytes | num_cols    | Number of columns in table (repeat)      |
 | ???? | 4 bytes | num_idx     | Number of indexes in table               |
-| ???? | 4 bytes | num_real_idx| Number of indexes in table (repeat)      |
+| ???? | 4 bytes | num_real_idx| Number of index entries                  |
 | ???? | 4 bytes | used_pages  | Points to a record containing the        |
 |      |         |             | usage bitmask for this table.            |
 | ???? | 4 bytes | free_pages  | Points to a similar record as above,     |
@@ -382,8 +396,8 @@ next_pg field.
 | ???? | 2 bytes | col_num     | Column Number (includes deleted columns) |
 | ???? | 2 bytes | offset_V    | Offset for variable length columns       |
 | ???? | 2 bytes | col_num     | Column Number                            |
-| ???? | 4 bytes | ???         | prec/scale? verify                       |
-| ???? | 1 byte  | bitmask     | low order bit indicates variable columns |
+| ???? | 4 bytes | ???         | prec/scale? or LCID (0x409=English)?     |
+| ???? | 1 byte  | bitmask     | See column flags bellow                  |
 | ???? | 1 byte  | ???         | seems to be 1 when variable len          |
 | 0000 | 4 bytes | ???         |                                          |
 | ???? | 2 bytes | offset_F    | Offset for fixed length columns          |
@@ -394,7 +408,7 @@ next_pg field.
 | ???? | 2 bytes | col_name_len| len of the name of the column            |
 | ???? | n bytes | col_name    | Name of the column (UCS-2 format)        |
 +-------------------------------------------------------------------------+
-| Iterate for the number of num_real_idx (30+22 = 52 bytes)               |
+| Iterate for indexes with index_type 0 or 1 (30+22 = 52 bytes)           |
 +-------------------------------------------------------------------------+
 | ???? | 4 bytes | ???         |                                          |
 +-------------------------------------------------------------------------+
@@ -408,12 +422,12 @@ next_pg field.
 | ???? | 1 byte  | flags       | See flags table for indexes              |
 | ???? | 9 bytes | unknown     |                                          |
 +-------------------------------------------------------------------------+
-| Iterate for the number of num_real_idx (28 bytes)                       |
+| Iterate for the number of num_idx (28 bytes)                            |
 +-------------------------------------------------------------------------+
 | ???? | 4 bytes | unknown     | matches first unknown definition block   |
 | ???? | 4 bytes | index_num   | Number of the index                      |
 |      |         |             |(warn: not always in the sequential order)|
-| ???? | 4 bytes | index_num2  | Number of the index (repeat)             |
+| ???? | 4 bytes | index_num2  | Index into index cols list               |
 | 0x00 | 1 byte  | ???         |                                          |
 | 0xFF | 4 bytes | ???         |                                          |
 | 0x00 | 4 bytes | ???         |                                          |
@@ -421,14 +435,29 @@ next_pg field.
 | ???? | 1 byte  | primary_key | 0x01 if this index is primary            |
 | ???? | 4 bytes | unknown     |                                          |
 +-------------------------------------------------------------------------+
-| Iterate for the number of num_real_idx                                  |
+| Iterate for the number of num_idx                                       |
 +-------------------------------------------------------------------------+
 | ???? | 2 bytes | idx_name_len| len of the name of the index             |
 | ???? | n bytes | idx_name    | Name of the index (UCS-2)                |
 +-------------------------------------------------------------------------+
-| ???? | n bytes | ???         |                                          |
-| 0xFF | 2 bytes | ???         | End of the tableDef  ?                   |
+| Iterate while col_num != 0xffff                                         |
 +-------------------------------------------------------------------------+
+| ???? | 2 bytes | col_num     | Column number with variable length       |
+| ???? | 4 bytes | arg1        |                                          |
+| ???? | 4 bytes | arg2        |                                          |
++-------------------------------------------------------------------------+
+
+Columns flags (not complete):
+0x01: variable length column
+0x02: can be null
+0x04: is auto long
+0x10: replication related field (or hidden?). These columns start with "s_" or
+      "Gen_" (the "Gen_" fields are for memo fields)
+0x40: is auto guid
+0x80: hyperlink. Syntax is "Link Title#http://example.com/somepage.html#" or
+      "#PAGE.HTM#"
+In Access 2007 and Access 2010, "Complex Columns" (multivalued fields, version
+history, attachments) always have the flag byte set to exactly 0x07.
 
 Index flags (not complete):
 0x01 Unique     
@@ -444,11 +473,11 @@ Column Type may be one of the following (not complete):
     MONEY           = 0x05 /* Currency        (64 bits) */
     FLOAT           = 0x06 /* Single          (32 bits) */
     DOUBLE          = 0x07 /* Double          (64 bits) */
-    SDATETIME       = 0x08 /* Short Date/Time (64 bits) */
+    DATETIME        = 0x08 /* Date/Time       (64 bits) */
     BINARY          = 0x09 /* Binary        (255 bytes) */
     TEXT            = 0x0A /* Text          (255 bytes) */
-    OLE             = 0x0B /* OLE */
-    MEMO            = 0x0C /* Memo, Hyperlink */
+    OLE             = 0x0B /* OLE = Long binary */
+    MEMO            = 0x0C /* Memo = Long text*/
     UNKNOWN_0D      = 0x0D
     UNKNOWN_0E      = 0x0E
     REPID           = 0x0F /* GUID */
@@ -669,36 +698,33 @@ read is stored, once the index search has been exhausted by the normal search
 routine, it enters a "clean up mode" and reads the next leaf page pointer until 
 it's null.
  
-KKD Records
------------
+Properties
+----------
 
-Design View table definitions appear to be stored in 'KKD' records (my name for 
-them...they always start with 'KKD\0'). Again these reside on pages, packed to 
-the end of the page. 
+Design View table definitions are stored in LvProp column of MSysObjects as OLE
+fields. They contain default values, description, format, required ...
 
-Update: The KKD records are stored in LvProp column of MSysObjects so they are 
-stored as other OLE/Memo fields are.
+They start with a 32 bits header: 'KKD\0' in Jet3 and 'MR2\0' in Jet 4.
 
-They look a little like this: (this needs work...see the kkd.c)
+Next come chunks. Each chunk starts with:
+32 bits length value (this includes the length)
+16 bits chunk type (0x00 0x80 contains the names, 0x00 0x00 and 0x00 0x01 contain
+	the values)
 
-'K' 'K' 'D' 0x00
-16 bit length value    (this includes the length)
-0x00 0x00
-0x80 0x00              (0x80 seems to indicate a header)
-Then one or more of: 16 bit length field and a value of that size.
+Name chunks (0x00 0x80) simply contains occurences of:
+16 bit name length
+name
 For instance: 
 0x0d 0x00 and 'AccessVersion' (AccessVersion is 13 bytes, 0x0d 0x00 intel order)
 
-Next comes one of more rows of data. (column names, descriptions, etc...)
+Next comes one of more chunk of data:
 16 bit length value    (this includes the length)
-0x00 0x00
-0x00 0x00
-   16bit length field (this include the length itself)
-   4 bytes of unknown purpose
-      16 bit length field (non-inclusive)
-      value (07.53 for the AccessVersion example above)
+8 bit type
+16 bit name (index in the name array of above chunk 0x00 0x80)
+16 bit length field (non-inclusive)
+value (07.53 for the AccessVersion example above)
 
-See kkd.c for an example, although it needs cleanup.
+See props.c for an example.
 
 
 Text Data Type
