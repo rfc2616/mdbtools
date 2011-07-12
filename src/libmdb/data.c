@@ -32,7 +32,6 @@ char *mdb_numeric_to_string(MdbHandle *mdb, int start, int prec, int scale);
 
 static int _mdb_attempt_bind(MdbHandle *mdb, 
 	MdbColumn *col, unsigned char isnull, int offset, int len);
-static char *mdb_date_to_string(MdbHandle *mdb, int start);
 #ifdef MDB_COPY_OLE
 static size_t mdb_copy_ole(MdbHandle *mdb, void *dest, int start, int size);
 #endif
@@ -827,7 +826,7 @@ mdb_date_to_tm(double td, struct tm *t)
 /* Date/Time is stored as a double, where the whole
    part is the days from 12/30/1899 and the fractional
    part is the fractional part of one day. */
-static char *
+char *
 mdb_date_to_string(MdbHandle *mdb, int start)
 {
 	struct tm t;
