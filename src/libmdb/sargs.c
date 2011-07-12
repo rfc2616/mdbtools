@@ -49,7 +49,7 @@ int rc;
 	if (node->op == MDB_LIKE) {
 		return mdb_like_cmp(s,node->value.s);
 	}
-	rc = strncmp(node->value.s, s, 255);
+	rc = strncmp(node->value.s, s, 2047);
 	switch (node->op) {
 		case MDB_EQUAL:
 			if (rc==0) return 1;
@@ -134,7 +134,7 @@ mdb_test_date(MdbSargNode *node, double td)
 			if (diff>=0) return 1;
 			break;
 		default:
-			fprintf(stderr, "Calling mdb_test_sarg on unknown operator.  Add code to mdb_test_string() for operator %d\n",node->op);
+			fprintf(stderr, "Calling mdb_test_sarg on unknown operator.  Add code to mdb_test_date() for operator %d\n",node->op);
 			break;
 	}
 	return 0;
@@ -174,7 +174,7 @@ mdb_find_indexable_sargs(MdbSargNode *node, gpointer data)
 int 
 mdb_test_sarg(MdbHandle *mdb, MdbColumn *col, MdbSargNode *node, MdbField *field)
 {
-	char tmpbuf[256];
+	char tmpbuf[2048];
 
 	if (node->op == MDB_ISNULL) {
 		if (field->is_null) return 0;
@@ -197,7 +197,7 @@ mdb_test_sarg(MdbHandle *mdb, MdbColumn *col, MdbSargNode *node, MdbField *field
 			return mdb_test_int(node, (gint32)mdb_get_int32(field->value, 0));
 			break;
 		case MDB_TEXT:
-			mdb_unicode2ascii(mdb, field->value, field->siz, tmpbuf, 256);
+			mdb_unicode2ascii(mdb, field->value, field->siz, tmpbuf, 2048);
 			return mdb_test_string(node, tmpbuf);
 			break;
 		case MDB_DATETIME:

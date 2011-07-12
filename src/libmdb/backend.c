@@ -156,7 +156,7 @@ static gboolean mdb_drop_backend(gpointer key, gpointer value, gpointer data);
 
 char* sanitize_name(const char* str)
 {
-	char *result = malloc(256);
+	char *result = malloc(2048);
 	char *p = result;
 
 	if (*str) {

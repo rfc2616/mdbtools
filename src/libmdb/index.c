@@ -253,7 +253,7 @@ mdb_index_cache_sarg(MdbColumn *col, MdbSarg *sarg, MdbSarg *idx_sarg)
 int 
 mdb_index_test_sarg(MdbHandle *mdb, MdbColumn *col, MdbSarg *sarg, int offset, int len)
 {
-char tmpbuf[256];
+char tmpbuf[2048];
 int lastchar;
 
 	switch (col->col_type) {
@@ -267,8 +267,8 @@ int lastchar;
 			return mdb_test_int(sarg, mdb_pg_get_int32(mdb, offset));
 			break;
 		case MDB_TEXT:
-			strncpy(tmpbuf, &mdb->pg_buf[offset],255);
-			lastchar = len > 255 ? 255 : len;
+			strncpy(tmpbuf, &mdb->pg_buf[offset],2047);
+			lastchar = len > 2047 ? 2047 : len;
 			tmpbuf[lastchar]='\0';
 			return mdb_test_string(sarg, tmpbuf);
 		default:
