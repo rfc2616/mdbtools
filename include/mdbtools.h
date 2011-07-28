@@ -46,7 +46,7 @@
 #define MDB_MAX_IDX_COLS 10
 #define MDB_CATALOG_PG 18
 #define MDB_MEMO_OVERHEAD 12
-#define MDB_BIND_SIZE 16384
+#define MDB_BIND_SIZE 200000
 
 enum {
 	MDB_PAGE_DB = 0,
@@ -89,7 +89,8 @@ enum {
 	MDB_OLE = 0x0b,
 	MDB_MEMO = 0x0c,
 	MDB_REPID = 0x0f,
-	MDB_NUMERIC = 0x10
+	MDB_NUMERIC = 0x10,
+	MDB_COMPLEX = 0x12
 };
 
 /* SARG operators */
@@ -256,6 +257,7 @@ typedef struct {
 	iconv_t	iconv_in;
 	iconv_t	iconv_out;
 #endif
+	void (*fatal_error_handler)(char *fmt, ...);
 } MdbHandle; 
 
 typedef struct {
@@ -314,6 +316,7 @@ typedef struct {
 	/* row_col_num is the row column number order, 
 	 * including deleted columns */
 	int		row_col_num;
+	int col_flags;
 } MdbColumn;
 
 struct mdbsargtree {
@@ -463,6 +466,8 @@ extern const char *mdb_col_get_prop(const MdbColumn *col, const gchar *key);
 /* data.c */
 extern int mdb_bind_column_by_name(MdbTableDef *table, gchar *col_name, void *bind_ptr, int *len_ptr);
 extern void mdb_data_dump(MdbTableDef *table);
+extern void mdb_date_to_tm(double td, struct tm *t);
+extern char *mdb_date_to_string(MdbHandle *mdb, int start);
 extern void mdb_bind_column(MdbTableDef *table, int col_num, void *bind_ptr, int *len_ptr);
 extern int mdb_rewind_table(MdbTableDef *table);
 extern int mdb_fetch_row(MdbTableDef *table);

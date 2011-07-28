@@ -167,7 +167,7 @@ mdb_read_indices(MdbTableDef *table)
 			/* here we have the internal column number that does not
 			 * always match the table columns because of deletions */
 			cleaned_col_num = -1;
-			for (k=0; k<=table->num_cols; k++) {
+			for (k=0; k<table->num_cols; k++) {
 				MdbColumn *col = g_ptr_array_index(table->columns,k);
 				if (col->col_num == col_num) {
 					cleaned_col_num = k;
@@ -253,7 +253,7 @@ mdb_index_cache_sarg(MdbColumn *col, MdbSarg *sarg, MdbSarg *idx_sarg)
 int 
 mdb_index_test_sarg(MdbHandle *mdb, MdbColumn *col, MdbSarg *sarg, int offset, int len)
 {
-char tmpbuf[256];
+char tmpbuf[2048];
 int lastchar;
 
 	switch (col->col_type) {
@@ -267,8 +267,8 @@ int lastchar;
 			return mdb_test_int(sarg, mdb_pg_get_int32(mdb, offset));
 			break;
 		case MDB_TEXT:
-			strncpy(tmpbuf, &mdb->pg_buf[offset],255);
-			lastchar = len > 255 ? 255 : len;
+			strncpy(tmpbuf, &mdb->pg_buf[offset],2047);
+			lastchar = len > 2047 ? 2047 : len;
 			tmpbuf[lastchar]='\0';
 			return mdb_test_string(sarg, tmpbuf);
 		default:
@@ -513,7 +513,7 @@ mdb_chain_add_page(MdbHandle *mdb, MdbIndexChain *chain, guint32 pg)
 
 	chain->cur_depth++;
 	if (chain->cur_depth > MDB_MAX_INDEX_DEPTH) {
-		fprintf(stderr,"Error! maximum index depth of %d exceeded.  This is probably due to a programming bug, If you are confident that your indexes really are this deep, adjust MDB_MAX_INDEX_DEPTH in mdbtools.h and recompile.\n", MDB_MAX_INDEX_DEPTH);
+		mdb->fatal_error_handler("Error! maximum index depth of %d exceeded.  This is probably due to a programming bug, If you are confident that your indexes really are this deep, adjust MDB_MAX_INDEX_DEPTH in mdbtools.h and recompile.\n", MDB_MAX_INDEX_DEPTH);
 		exit(1);
 	}
 	ipg = &(chain->pages[chain->cur_depth - 1]);
