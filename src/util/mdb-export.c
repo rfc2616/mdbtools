@@ -35,6 +35,9 @@ static char *escapes(char *s);
 static void
 print_col(gchar *col_val, int quote_text, int col_type, int bin_len, char *quote_char, char *escape_char)
 {
+  if (is_binary_type(col_type)) {
+    return;
+  }
 	size_t quote_len = strlen(quote_char); /* multibyte */
 
 	size_t orig_escape_len = escape_char ? strlen(escape_char) : 0;
